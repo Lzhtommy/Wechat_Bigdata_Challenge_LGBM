@@ -2,14 +2,26 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
+from sklearn.decomposition import PCA
 from lightgbm.sklearn import LGBMClassifier
 from collections import defaultdict
+import os
 import gc
 import time
-from sklearn.decomposition import PCA
+import psutil
 
 pd.set_option('display.max_columns', None)
 
+## 打印当前内存占用
+def show_memory_info(hint):
+    pid = os.getpid()
+    p = psutil.Process(pid)
+
+    info = p.memory_full_info()
+    memory = info.uss / 1024. / 1024
+    print('{} memory used: {} MB'.format(hint, memory))
+
+## 优化内存空间
 def reduce_mem(df, cols):
     start_mem = df.memory_usage().sum() / 1024 ** 2
 
@@ -41,9 +53,7 @@ def reduce_mem(df, cols):
     return df
 
 ## 从官方baseline里面抽出来的评测函数
-
 def uAUC(labels, preds, user_id_list):
-    """Calculate user AUC"""
     user_pred = defaultdict(lambda: [])
     user_truth = defaultdict(lambda: [])
 
@@ -79,38 +89,58 @@ def uAUC(labels, preds, user_id_list):
     return user_auc
 
 ## 定义全局变量
-y_list = ['read_comment', 'like', 'click_avatar', 'forward', 'favorite', 'comment', 'follow']
-play_cols = ['is_finish', 'play_times', 'play', 'stay']
-max_day = 15
-n_day = 5
+ACTION_LIST = ['read_comment', 'like', 'click_avatar', 'forward', 'favorite', 'comment', 'follow']
+PLAY_COLS = ['is_finish', 'play_times', 'play', 'stay']
+FEED_COLS = ['feedid', 'authorid', 'videoplayseconds', "machine_tag_list", "bgm_song_id", "bgm_singer_id"]
+ACTION_SAMPLE_RATE = {"read_comment": 0.1, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
+MAX_DAY = 15
+VALIDATE_DAY = 14
+PAST_DAYS = 7
 
 ## 读取训练集
+show_memory_info('step1')
 train_raw = pd.read_csv('data/user_action.csv')
 print(train_raw.shape)
-for y in y_list:
+for y in ACTION_LIST:
     print(y, train_raw[y].mean())
 
 ## 读取测试集
 test_raw = pd.read_csv('data/test_a.csv')
-test_raw['date_'] = max_day
+test_raw['date_'] = MAX_DAY
 print(test_raw.shape)
 
 ## 合并处理
+show_memory_info('step2')
 df = pd.concat([train_raw, test_raw], axis=0, ignore_index=True)
 print(df.head(3))
 del train_raw, test_raw
 gc.collect()
 
+## 下采样
+# temp_df = df[(df["date_"] >= VALIDATE_DAY)]
+# for action in ACTION_LIST[:1]:
+#     action_df = df[(df["date_"] < VALIDATE_DAY)]
+#     df_neg = action_df[action_df[action] == 0]
+#     df_pos = action_df[action_df[action] == 1]
+#     df_neg = df_neg.sample(frac=ACTION_SAMPLE_RATE[action], random_state=2021, replace=False)
+#     temp_df = pd.concat([temp_df, df_neg, df_pos])
+# df = temp_df
+# del temp_df
+# gc.collect()
+
 ## 读取视频信息表
+show_memory_info('step3')
 feed_info = pd.read_csv('data/feed_info.csv')
 
-## 此份baseline只保留这三列
-feed_info = feed_info[['feedid', 'authorid', 'videoplayseconds']]
+## 此份baseline只保留这X列
+show_memory_info('step4')
+feed_info = feed_info[FEED_COLS]
 df = df.merge(feed_info, on='feedid', how='left')
 del feed_info
 gc.collect()
 
 ## 视频时长是秒，转换成毫秒，才能与play、stay做运算
+show_memory_info('step5')
 df['videoplayseconds'] *= 1000
 
 ## 是否观看完视频（其实不用严格按大于关系，也可以按比例，比如观看比例超过0.9就算看完）
@@ -118,7 +148,9 @@ df['is_finish'] = (df['play'] >= df['videoplayseconds']).astype('int8')
 df['play_times'] = df['play'] / df['videoplayseconds']
 
 ## 统计最大概率tag
-#df['tags'] = df["machine_tag_list"].apply(lambda x: int(max(map(lambda y: y.split(" "), ["0 1"] if pd.isna(x) else str(x).split(";")), key=lambda z: float(z[1]) if len(z)>1 else 0)[0]))
+df['tags'] = df["machine_tag_list"].apply(lambda x: max(map(lambda y: y.split(" "), str(x).split(";")),
+                                                        key=lambda z: float(z[1]) if len(z) > 1 else 0)[0])
+df = df.drop(columns="machine_tag_list")
 
 ## 定义类别特征
 category_cols = []
@@ -127,6 +159,7 @@ for col in category_cols:
     df[col] = df[col].astype('category')
 
 ## 读取feed_embedding pca
+show_memory_info('step6')
 feed_embedding = pd.read_csv('data/feed_embeddings.csv')
 temp = list(feed_embedding["feed_embedding"].apply(lambda x: list(map(float, x.strip().split(" ")))))
 pca = PCA(n_components=16)
@@ -143,37 +176,45 @@ gc.collect()
 df[df.select_dtypes("float").columns] = df.select_dtypes("float").apply(pd.to_numeric, downcast="float")
 
 ## 统计历史X天的曝光、转化、视频观看等情况（此处的转化率统计其实就是target encoding）
+show_memory_info('step7')
 for stat_cols in tqdm([
     ['userid'],
     ['feedid'],
     ['authorid'],
-    ['userid', 'authorid']
+    ['userid', 'authorid'],
+    ['tags'],
+    ['userid', 'tags'],
+    ['bgm_singer_id'],
+    ['bgm_song_id']
 ]):
 
     f = '_'.join(stat_cols)
     stat_df = pd.DataFrame()
 
-    for target_day in range(2, max_day + 1):
-        #left, right = target_day - n_day, target_day - 1
-        left, right = max(target_day - n_day, 1), target_day - 1
+    for target_day in range(PAST_DAYS + 1, MAX_DAY + 1):
+        left, right = target_day - PAST_DAYS, target_day - 1
+        #left, right = max(target_day - PAST_DAYS, 1), target_day - 1
         tmp = df[((df['date_'] >= left) & (df['date_'] <= right))].reset_index(drop=True)
         tmp['date_'] = target_day
-        tmp['{}_{}day_count'.format(f, n_day)] = tmp.groupby(stat_cols)['date_'].transform('count')
+        tmp['{}_{}day_count'.format(f, PAST_DAYS)] = tmp.groupby(stat_cols)['date_'].transform('count')
+
+        feats = ['{}_{}day_count'.format(f, PAST_DAYS)]
 
         g = tmp.groupby(stat_cols)
 
-        tmp['{}_{}day_finish_rate'.format(f, n_day)] = g[play_cols[0]].transform('mean')
-        feats = ['{}_{}day_count'.format(f, n_day), '{}_{}day_finish_rate'.format(f, n_day)]
+        for x in PLAY_COLS[:2]:
+            tmp['{}_{}day_{}_rate'.format(f, PAST_DAYS, x)] = g[x].transform('mean')
+            feats.append('{}_{}day_{}_rate'.format(f, PAST_DAYS, x))
 
-        for x in play_cols[1:]:
+        for x in PLAY_COLS[2:]:
             for stat in ['max', 'min', 'mean', 'std', 'median']:
-                tmp['{}_{}day_{}_{}'.format(f, n_day, x, stat)] = g[x].transform(stat)
-                feats.append('{}_{}day_{}_{}'.format(f, n_day, x, stat))
+                tmp['{}_{}day_{}_{}'.format(f, PAST_DAYS, x, stat)] = g[x].transform(stat)
+                feats.append('{}_{}day_{}_{}'.format(f, PAST_DAYS, x, stat))
 
-        for y in y_list:
-            tmp['{}_{}day_{}_sum'.format(f, n_day, y)] = g[y].transform('sum')
-            tmp['{}_{}day_{}_mean'.format(f, n_day, y)] = g[y].transform('mean')
-            feats.extend(['{}_{}day_{}_sum'.format(f, n_day, y), '{}_{}day_{}_mean'.format(f, n_day, y)])
+        for y in ACTION_LIST:
+            tmp['{}_{}day_{}_sum'.format(f, PAST_DAYS, y)] = g[y].transform('sum')
+            tmp['{}_{}day_{}_mean'.format(f, PAST_DAYS, y)] = g[y].transform('mean')
+            feats.extend(['{}_{}day_{}_sum'.format(f, PAST_DAYS, y), '{}_{}day_{}_mean'.format(f, PAST_DAYS, y)])
 
         tmp = tmp[stat_cols + feats + ['date_']].drop_duplicates(stat_cols + ['date_']).reset_index(drop=True)
         stat_df = pd.concat([stat_df, tmp], axis=0, ignore_index=True)
@@ -183,9 +224,10 @@ for stat_cols in tqdm([
     del stat_df
     gc.collect()
 
-df = df.drop(columns=play_cols)
+df = df.drop(columns=['play_times', 'is_finish', 'play', 'stay', "bgm_song_id", "bgm_singer_id", "tags"])
 
 ## 全局信息统计，包括曝光、偏好等，略有穿越，但问题不大，可以上分，只要注意不要对userid-feedid做组合统计就行
+show_memory_info('step8')
 for f in tqdm(['userid', 'feedid', 'authorid']):
     df[f + '_count'] = df[f].map(df[f].value_counts())
 
@@ -209,30 +251,34 @@ df['videoplayseconds_in_userid_mean'] = df.groupby('userid')['videoplayseconds']
 df['videoplayseconds_in_authorid_mean'] = df.groupby('authorid')['videoplayseconds'].transform('mean')
 df['feedid_in_authorid_nunique'] = df.groupby('authorid')['feedid'].transform('nunique')
 
+df = df.drop(columns=['feedid', 'authorid'])
+
 ## 内存够用的不需要做这一步
-df = reduce_mem(df, [f for f in df.columns if f not in ['date_'] + y_list + category_cols])
+show_memory_info('step9')
+df = reduce_mem(df, [f for f in df.columns if f not in ['date_'] + ACTION_LIST + category_cols])
 
 ## 定义训练集验证集
+show_memory_info('step10')
 train = df[~df['read_comment'].isna()].reset_index(drop=True)
 test = df[df['read_comment'].isna()].reset_index(drop=True)
 
-cols = [f for f in df.columns if f not in ['date_'] + y_list]
+cols = [f for f in df.columns if f not in ['date_', 'userid'] + ACTION_LIST]
 del df
 gc.collect()
 
 print(train[cols].shape)
 print(cols)
-print(train[cols].dtypes)
 
-#trn_x = train[(train['date_'] >= n_day + 1) & (train['date_'] < max_day - 1)].reset_index(drop=True)
-trn_x = train[train['date_'] < max_day - 1].reset_index(drop=True)
-val_x = train[train['date_'] == max_day - 1].reset_index(drop=True)
+trn_x = train[(train['date_'] >= PAST_DAYS + 1) & (train['date_'] < MAX_DAY - 1)].reset_index(drop=True)
+#trn_x = train[train['date_'] < MAX_DAY - 1].reset_index(drop=True)
+val_x = train[train['date_'] == VALIDATE_DAY].reset_index(drop=True)
 
 ##################### 线下验证 #####################
+show_memory_info('step11')
 uauc_list = []
 r_list = []
 
-for y in y_list[:4]:
+for y in ACTION_LIST[:1]:
     print('=========', y, '=========')
 
     t = time.time()
@@ -261,40 +307,40 @@ for y in y_list[:4]:
     r_list.append(clf.best_iteration_)
     print('runtime: {}\n'.format(time.time() - t))
 
-weighted_uauc = 0.4 * uauc_list[0] + 0.3 * uauc_list[1] + 0.2 * uauc_list[2] + 0.1 * uauc_list[3]
-del trn_x, val_x
-gc.collect()
-
-print(uauc_list)
-print(weighted_uauc)
+# weighted_uauc = 0.4 * uauc_list[0] + 0.3 * uauc_list[1] + 0.2 * uauc_list[2] + 0.1 * uauc_list[3]
+# del trn_x, val_x
+# gc.collect()
+# print(uauc_list)
+# print(weighted_uauc)
 
 ##################### 全量训练 #####################
-
-r_dict = dict(zip(y_list[:4], r_list))
-
-for y in y_list[:4]:
-    print('=========', y, '=========')
-
-    t = time.time()
-    clf = LGBMClassifier(
-        learning_rate=0.05,
-        n_estimators=r_dict[y],
-        num_leaves=63,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=2021
-    )
-
-    clf.fit(
-        train[cols], train[y],
-        eval_set=[(train[cols], train[y])],
-        early_stopping_rounds=r_dict[y],
-        verbose=100
-    )
-
-    test[y] = clf.predict_proba(test[cols])[:, 1]
-    print('runtime: {}\n'.format(time.time() - t))
-
-test[['userid', 'feedid'] + y_list[:4]].to_csv(
-    'sub_%.6f_%.6f_%.6f_%.6f_%.6f.csv' % (weighted_uauc, uauc_list[0], uauc_list[1], uauc_list[2], uauc_list[3]),index=False
-)
+#show_memory_info('step12')
+# trn_all = train[(train['date_'] >= PAST_DAYS + 1) & (train['date_'] < MAX_DAY)].reset_index(drop=True)
+# r_dict = dict(zip(ACTION_LIST[:4], r_list))
+#
+# for y in ACTION_LIST[:4]:
+#     print('=========', y, '=========')
+#
+#     t = time.time()
+#     clf = LGBMClassifier(
+#         learning_rate=0.05,
+#         n_estimators=r_dict[y],
+#         num_leaves=63,
+#         subsample=0.8,
+#         colsample_bytree=0.8,
+#         random_state=2021
+#     )
+#
+#     clf.fit(
+#         trn_all[cols], trn_all[y],
+#         eval_set=[(trn_all[cols], trn_all[y])],
+#         early_stopping_rounds=r_dict[y],
+#         verbose=100
+#     )
+#
+#     test[y] = clf.predict_proba(test[cols])[:, 1]
+#     print('runtime: {}\n'.format(time.time() - t))
+#
+# test[['userid', 'feedid'] + ACTION_LIST[:4]].to_csv(
+#     'sub_%.6f_%.6f_%.6f_%.6f_%.6f.csv' % (weighted_uauc, uauc_list[0], uauc_list[1], uauc_list[2], uauc_list[3]),index=False
+# )
