@@ -90,7 +90,7 @@ def uAUC(labels, preds, user_id_list):
 
 ## 定义全局变量
 ACTION_LIST = ["read_comment", "like", "click_avatar", "forward", "favorite", "comment", "follow"]
-PLAY_COLS = ["is_finish", "play_times", "videoplayseconds", "play", "stay"]
+PLAY_COLS = ["is_finish", "play_times", "play", "stay"]
 FEED_COLS = ["feedid", "authorid", "videoplayseconds", "machine_tag_list", "bgm_song_id", "bgm_singer_id"]
 ACTION_SAMPLE_RATE = {"read_comment": 0.1, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
 MAX_DAY = 15
@@ -213,10 +213,11 @@ for stat_cols in tqdm([
         #     tmp["{}_{}day_{}_rate".format(f, PAST_DAYS, x)] = g[x].transform("mean")
         #     feats.append("{}_{}day_{}_rate".format(f, PAST_DAYS, x))
         #
-        for x in PLAY_COLS[3:]:
-            for stat in ["max", "mean"]:
-                tmp["{}_{}day_{}_{}".format(f, PAST_DAYS, x, stat)] = g[x].transform(stat)
-                feats.append("{}_{}day_{}_{}".format(f, PAST_DAYS, x, stat))
+        if stat_cols not in [["userid"], ["device"]]:
+            for x in PLAY_COLS[1:]:
+                for stat in ["max", "mean"]:
+                    tmp["{}_{}day_{}_{}".format(f, PAST_DAYS, x, stat)] = g[x].transform(stat)
+                    feats.append("{}_{}day_{}_{}".format(f, PAST_DAYS, x, stat))
 
         for y in ACTION_LIST:
             tmp["{}_{}day_{}_sum".format(f, PAST_DAYS, y)] = g[y].transform("sum")
