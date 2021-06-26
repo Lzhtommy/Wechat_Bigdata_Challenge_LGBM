@@ -91,7 +91,7 @@ def uAUC(labels, preds, user_id_list):
 ## 定义全局变量
 ACTION_LIST = ["read_comment", "like", "click_avatar", "forward", "favorite", "comment", "follow"]
 PLAY_COLS = ["is_finish", "play_times", "play", "stay"]
-FEED_COLS = ["feedid", "authorid", "videoplayseconds", "machine_tag_list", "bgm_song_id", "bgm_singer_id"]
+FEED_COLS = ["feedid", "authorid", "videoplayseconds", "machine_tag_list", "bgm_song_id", "bgm_singer_id", "machine_keyword_list"]
 ACTION_SAMPLE_RATE = {"read_comment": 0.1, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
 MAX_DAY = 15
 VALIDATE_DAY = 14
@@ -149,9 +149,10 @@ df["videoplayseconds"] *= 1000
 df["is_finish"] = (df["play"] >= df["videoplayseconds"]).astype("int8")
 df["play_times"] = df["play"] / df["videoplayseconds"]
 
-## 统计最大概率tag
+## 统计最大概率tag keywords
 df["tags"] = df["machine_tag_list"].apply(lambda x: max(map(lambda y: y.split(" "), str(x).split(";")),
-                                                        key=lambda z: float(z[1]) if len(z) > 1 else 0)[0])
+                                                        key=lambda z: float(z[1]) if len(z) > 1 else "0")[0])
+df["keywords"] = df["machine_keyword_list"].apply(lambda x: "0" if pd.isna(x) else str(x).split(";")[0])
 
 ## 定义类别特征
 category_cols = []
@@ -184,6 +185,7 @@ for stat_cols in tqdm([
     ["feedid"],
     ["authorid"],
     ["tags"],
+    ["keywords"],
     ["bgm_singer_id"],
     ["bgm_song_id"],
     ["userid", "authorid"],
@@ -246,7 +248,7 @@ for stat_cols in tqdm([
     gc.collect()
 
 df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", "device",
-                      "bgm_singer_id", "tags", "feedid", "authorid", "machine_tag_list"])
+                      "bgm_singer_id", "tags", "feedid", "authorid", "machine_tag_list", "machine_keyword_list", "keywords"])
 
 ## 全局信息统计，包括曝光、偏好等，略有穿越，但问题不大，可以上分，只要注意不要对userid-feedid做组合统计就行
 # show_memory_info("step8")
@@ -276,8 +278,8 @@ df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", 
 # df = df.drop(columns=["feedid", "authorid"])
 
 ## 内存够用的不需要做这一步
-show_memory_info("step9")
-df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST + category_cols])
+# show_memory_info("step9")
+# df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST + category_cols])
 
 ## 定义训练集验证集
 show_memory_info("step10")
