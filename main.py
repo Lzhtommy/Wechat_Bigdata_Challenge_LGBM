@@ -96,6 +96,7 @@ ACTION_SAMPLE_RATE = {"read_comment": 0.1, "like": 0.2, "click_avatar": 0.2, "fo
 MAX_DAY = 15
 VALIDATE_DAY = 14
 PAST_DAYS = 7
+TOWARD_DAYS = 3
 
 ## 读取训练集
 show_memory_info("step1")
@@ -162,7 +163,7 @@ for col in category_cols:
 # show_memory_info("step7")
 # feed_embedding = pd.read_csv("data/feed_embeddings.csv")
 # temp = list(feed_embedding["feed_embedding"].apply(lambda x: list(map(float, x.strip().split(" ")))))
-# pca = PCA(n_components=16)
+# pca = PCA(n_components=32)
 # X_r = pca.fit(temp).transform(temp).T
 # feed_embedding = feed_embedding.drop(columns="feed_embedding")
 #
@@ -188,7 +189,7 @@ for stat_cols in tqdm([
     ["userid", "authorid"],
     ["userid", "tags"],
     ["userid", "bgm_singer_id"],
-    ["userid", "bgm_song_id"],
+    ["userid", "bgm_song_id"]
 ]):
 
     f = "_".join(stat_cols)
@@ -205,14 +206,26 @@ for stat_cols in tqdm([
         if stat_cols not in [["device"]]:
             tmp = tmp.merge(g.size().reset_index(name="{}_count".format(f)), on=stat_cols, how="left")
             feats.append("{}_count".format(f))
-        #
-        # tmp["{}_{}day_count".format(f, PAST_DAYS)] = g["date_"].transform("count")
-        # feats.append("{}_{}day_count".format(f, PAST_DAYS))
-        #
+
+        # if stat_cols in [["userid", "authorid"], ["userid", "tags"]]:
+        #     tmp["{}_in_{}".format(f, stat_cols[0])] = tmp["{}_count".format(f)] / (tmp["{}_count".format(stat_cols[0])] + 1)
+        #     tmp["{}_in_{}".format(f, stat_cols[1])] = tmp["{}_count".format(f)] / (tmp["{}_count".format(stat_cols[1])] + 1)
+        #     feats.append("{}_in_{}".format(f, stat_cols[0]))
+        #     feats.append("{}_in_{}".format(f, stat_cols[1]))
+
+        # if stat_cols not in [["device"]]:
+        #     tmp["{}_{}day_count".format(f, PAST_DAYS)] = g["date_"].transform("count")
+        #     feats.append("{}_{}day_count".format(f, PAST_DAYS))
+
         # for x in PLAY_COLS[:3]:
         #     tmp["{}_{}day_{}_rate".format(f, PAST_DAYS, x)] = g[x].transform("mean")
         #     feats.append("{}_{}day_{}_rate".format(f, PAST_DAYS, x))
         #
+
+        # if stat_cols not in [["device"], ["feedid"]]:
+        #     tmp["{}_{}day_videoplayseconds_mean".format(f, PAST_DAYS)] = g["videoplayseconds"].transform("mean")
+        #     feats.append("{}_{}day_videoplayseconds_mean".format(f, PAST_DAYS))
+
         if stat_cols not in [["userid"], ["device"]]:
             for x in PLAY_COLS[1:]:
                 for stat in ["max", "mean"]:
@@ -233,7 +246,7 @@ for stat_cols in tqdm([
     gc.collect()
 
 df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", "device",
-                      "bgm_singer_id", "tags", "feedid", "authorid", "videoplayseconds", "machine_tag_list"])
+                      "bgm_singer_id", "tags", "feedid", "authorid", "machine_tag_list"])
 
 ## 全局信息统计，包括曝光、偏好等，略有穿越，但问题不大，可以上分，只要注意不要对userid-feedid做组合统计就行
 # show_memory_info("step8")
@@ -263,8 +276,8 @@ df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", 
 # df = df.drop(columns=["feedid", "authorid"])
 
 ## 内存够用的不需要做这一步
-# show_memory_info("step9")
-# df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST + category_cols])
+show_memory_info("step9")
+df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST + category_cols])
 
 ## 定义训练集验证集
 show_memory_info("step10")
