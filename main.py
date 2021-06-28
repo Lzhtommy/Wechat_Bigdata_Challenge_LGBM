@@ -91,15 +91,15 @@ def uAUC(labels, preds, user_id_list):
 ## 定义全局变量
 ACTION_LIST = ["read_comment", "like", "click_avatar", "forward", "favorite", "comment", "follow"]
 PLAY_COLS = ["is_finish", "play_times", "play", "stay"]
+CATEGORY_COLS = ["feedid", "authorid", "userid", "device"]
 FEED_COLS = ["feedid", "authorid", "videoplayseconds", "machine_tag_list", "bgm_song_id", "bgm_singer_id", "machine_keyword_list"]
-ACTION_SAMPLE_RATE = {"read_comment": 0.1, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
+ACTION_SAMPLE_RATE = {"read_comment": 0.2, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
 MAX_DAY = 15
 VALIDATE_DAY = 14
 PAST_DAYS = 7
 TOWARD_DAYS = 3
 
 ## 读取训练集
-show_memory_info("step1")
 train_raw = pd.read_csv("data/user_action.csv")
 print(train_raw.shape)
 for y in ACTION_LIST:
@@ -111,14 +111,12 @@ test_raw["date_"] = MAX_DAY
 print(test_raw.shape)
 
 ## 合并处理
-show_memory_info("step2")
 df = pd.concat([train_raw, test_raw], axis=0, ignore_index=True)
 print(df.head(3))
 del train_raw, test_raw
 gc.collect()
 
 ## 下采样
-show_memory_info("step3")
 temp_df = df[(df["date_"] >= VALIDATE_DAY)]
 for action in ACTION_LIST[:1]:
     action_df = df[(df["date_"] < VALIDATE_DAY)]
@@ -131,18 +129,15 @@ del temp_df
 gc.collect()
 
 ## 读取视频信息表
-show_memory_info("step4")
 feed_info = pd.read_csv("data/feed_info.csv")
 
 ## 此份baseline只保留这X列
-show_memory_info("step5")
 feed_info = feed_info[FEED_COLS]
 df = df.merge(feed_info, on="feedid", how="left")
 del feed_info
 gc.collect()
 
 ## 视频时长是秒，转换成毫秒，才能与play、stay做运算
-show_memory_info("step6")
 df["videoplayseconds"] *= 1000
 
 ## 是否观看完视频（其实不用严格按大于关系，也可以按比例，比如观看比例超过0.9就算看完）
@@ -154,14 +149,7 @@ df["tags"] = df["machine_tag_list"].apply(lambda x: max(map(lambda y: y.split(" 
                                                         key=lambda z: float(z[1]) if len(z) > 1 else "0")[0])
 df["keywords"] = df["machine_keyword_list"].apply(lambda x: "0" if pd.isna(x) else str(x).split(";")[0])
 
-## 定义类别特征
-category_cols = []
-
-for col in category_cols:
-    df[col] = df[col].astype("category")
-
 ## 读取feed_embedding pca
-# show_memory_info("step7")
 # feed_embedding = pd.read_csv("data/feed_embeddings.csv")
 # temp = list(feed_embedding["feed_embedding"].apply(lambda x: list(map(float, x.strip().split(" ")))))
 # pca = PCA(n_components=32)
@@ -178,20 +166,19 @@ for col in category_cols:
 # df[df.select_dtypes("float").columns] = df.select_dtypes("float").apply(pd.to_numeric, downcast="float")
 
 ## 统计历史X天的曝光、转化、视频观看等情况（此处的转化率统计其实就是target encoding）
-show_memory_info("step8")
 for stat_cols in tqdm([
     ["device"],
     ["userid"],
     ["feedid"],
     ["authorid"],
-    ["tags"],
-    ["keywords"],
-    ["bgm_singer_id"],
-    ["bgm_song_id"],
-    ["userid", "authorid"],
-    ["userid", "tags"],
-    ["userid", "bgm_singer_id"],
-    ["userid", "bgm_song_id"]
+    # ["tags"],
+    # ["keywords"],
+    # ["bgm_singer_id"],
+    # ["bgm_song_id"],
+    ["userid", "authorid"]
+    # ["userid", "tags"],
+    # ["userid", "bgm_singer_id"],
+    # ["userid", "bgm_song_id"]
 ]):
 
     f = "_".join(stat_cols)
@@ -247,11 +234,10 @@ for stat_cols in tqdm([
     del stat_df
     gc.collect()
 
-df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", "device",
-                      "bgm_singer_id", "tags", "feedid", "authorid", "machine_tag_list", "machine_keyword_list", "keywords"])
+df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", "bgm_singer_id", "tags", "keywords",
+                      "machine_tag_list", "machine_keyword_list"])
 
 ## 全局信息统计，包括曝光、偏好等，略有穿越，但问题不大，可以上分，只要注意不要对userid-feedid做组合统计就行
-# show_memory_info("step8")
 # for f in tqdm(["userid", "feedid", "authorid"]):
 #     df[f + "_count"] = df[f].map(df[f].value_counts())
 #
@@ -278,26 +264,25 @@ df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", 
 # df = df.drop(columns=["feedid", "authorid"])
 
 ## 内存够用的不需要做这一步
-# show_memory_info("step9")
-# df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST + category_cols])
+show_memory_info("step9")
+df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST])
 
 ## 定义训练集验证集
-show_memory_info("step10")
 train = df[~df["read_comment"].isna()].reset_index(drop=True)
 test = df[df["read_comment"].isna()].reset_index(drop=True)
 
-cols = [f for f in df.columns if f not in ["date_", "userid"] + ACTION_LIST]
+cols = [f for f in df.columns if f not in ["date_"] + ACTION_LIST]
 del df
 gc.collect()
 
 print(train[cols].shape)
 print(cols)
 
-trn_x = train[(train["date_"] >= PAST_DAYS + 1) & (train["date_"] < MAX_DAY - 1)].reset_index(drop=True)
+#trn_x = train[train["date_"] < VALIDATE_DAY].reset_index(drop=True)
+trn_x = train[(train["date_"] >= PAST_DAYS + 1) & (train["date_"] < VALIDATE_DAY)].reset_index(drop=True)
 val_x = train[train["date_"] == VALIDATE_DAY].reset_index(drop=True)
 
 ##################### 线下验证 #####################
-show_memory_info("step11")
 uauc_list = []
 r_list = []
 
@@ -307,6 +292,7 @@ for y in ACTION_LIST[:1]:
     t = time.time()
     clf = LGBMClassifier(
         learning_rate=0.05,
+        #class_weight="balanced",
         n_estimators=5000,
         num_leaves=63,
         subsample=0.8,
@@ -319,8 +305,9 @@ for y in ACTION_LIST[:1]:
         trn_x[cols], trn_x[y],
         eval_set=[(val_x[cols], val_x[y])],
         eval_metric="auc",
+        categorical_feature=CATEGORY_COLS,
         early_stopping_rounds=100,
-        verbose=50
+        verbose=50,
     )
 
     val_x[y + "_score"] = clf.predict_proba(val_x[cols])[:, 1]
@@ -337,7 +324,6 @@ for y in ACTION_LIST[:1]:
 # print(weighted_uauc)
 
 ##################### 全量训练 #####################
-#show_memory_info("step12")
 # trn_all = train[(train["date_"] >= PAST_DAYS + 1) & (train["date_"] < MAX_DAY)].reset_index(drop=True)
 # r_dict = dict(zip(ACTION_LIST[:4], r_list))
 #
