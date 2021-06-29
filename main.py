@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 from tqdm import tqdm
 from sklearn.metrics import roc_auc_score
 from sklearn.decomposition import PCA
@@ -52,6 +54,16 @@ def reduce_mem(df, cols):
     gc.collect()
     return df
 
+## importance plot
+def display_importances(feature_importance_df_):
+    cols = feature_importance_df_[["feature", "importance"]].groupby("feature").mean().sort_values(by="importance", ascending=False)[:50].index
+    best_features = feature_importance_df_.loc[feature_importance_df_.feature.isin(cols)]
+    plt.figure(figsize=(8, 10))
+    sns.barplot(x="importance", y="feature", data=best_features.sort_values(by="importance", ascending=False))
+    plt.title('features importance')
+    plt.tight_layout()
+    plt.savefig('lgbm_importances04.png')
+
 ## 从官方baseline里面抽出来的评测函数
 def uAUC(labels, preds, user_id_list):
     user_pred = defaultdict(lambda: [])
@@ -91,9 +103,9 @@ def uAUC(labels, preds, user_id_list):
 ## 定义全局变量
 ACTION_LIST = ["read_comment", "like", "click_avatar", "forward", "favorite", "comment", "follow"]
 PLAY_COLS = ["is_finish", "play_times", "play", "stay"]
-CATEGORY_COLS = ["feedid", "authorid", "userid", "device"]
+CATEGORY_COLS = ["feedid", "authorid", "userid", "device", "bgm_song_id", "bgm_singer_id"]
 FEED_COLS = ["feedid", "authorid", "videoplayseconds", "machine_tag_list", "bgm_song_id", "bgm_singer_id", "machine_keyword_list"]
-ACTION_SAMPLE_RATE = {"read_comment": 0.2, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
+ACTION_SAMPLE_RATE = {"read_comment": 0.1, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
 MAX_DAY = 15
 VALIDATE_DAY = 14
 PAST_DAYS = 7
@@ -117,16 +129,16 @@ del train_raw, test_raw
 gc.collect()
 
 ## 下采样
-temp_df = df[(df["date_"] >= VALIDATE_DAY)]
-for action in ACTION_LIST[:1]:
-    action_df = df[(df["date_"] < VALIDATE_DAY)]
-    df_neg = action_df[action_df[action] == 0]
-    df_pos = action_df[action_df[action] == 1]
-    df_neg = df_neg.sample(frac=ACTION_SAMPLE_RATE[action], random_state=2021, replace=False)
-    temp_df = pd.concat([temp_df, df_neg, df_pos])
-df = temp_df
-del temp_df
-gc.collect()
+# temp_df = df[(df["date_"] >= VALIDATE_DAY)]
+# for action in ACTION_LIST[:1]:
+#     action_df = df[(df["date_"] < VALIDATE_DAY)]
+#     df_neg = action_df[action_df[action] == 0]
+#     df_pos = action_df[action_df[action] == 1]
+#     df_neg = df_neg.sample(frac=ACTION_SAMPLE_RATE[action], random_state=2021, replace=False)
+#     temp_df = pd.concat([temp_df, df_neg, df_pos])
+# df = temp_df
+# del temp_df
+# gc.collect()
 
 ## 读取视频信息表
 feed_info = pd.read_csv("data/feed_info.csv")
@@ -147,23 +159,23 @@ df["play_times"] = df["play"] / df["videoplayseconds"]
 ## 统计最大概率tag keywords
 df["tags"] = df["machine_tag_list"].apply(lambda x: max(map(lambda y: y.split(" "), str(x).split(";")),
                                                         key=lambda z: float(z[1]) if len(z) > 1 else "0")[0])
-df["keywords"] = df["machine_keyword_list"].apply(lambda x: "0" if pd.isna(x) else str(x).split(";")[0])
+df["keywords"] = df["machine_keyword_list"].apply(lambda x: str(x).split(";")[0])
 
 ## 读取feed_embedding pca
-# feed_embedding = pd.read_csv("data/feed_embeddings.csv")
-# temp = list(feed_embedding["feed_embedding"].apply(lambda x: list(map(float, x.strip().split(" ")))))
-# pca = PCA(n_components=32)
-# X_r = pca.fit(temp).transform(temp).T
-# feed_embedding = feed_embedding.drop(columns="feed_embedding")
-#
-# for i, j in enumerate(X_r):
-#     feed_embedding["pca{}".format(i)] = j
-#
-# df = df.merge(feed_embedding, on="feedid", how="left")
-# del feed_embedding, temp
-# gc.collect()
-#
-# df[df.select_dtypes("float").columns] = df.select_dtypes("float").apply(pd.to_numeric, downcast="float")
+feed_embedding = pd.read_csv("data/feed_embeddings.csv")
+temp = list(feed_embedding["feed_embedding"].apply(lambda x: list(map(float, x.strip().split(" ")))))
+pca = PCA(n_components=32)
+X_r = pca.fit(temp).transform(temp).T
+feed_embedding = feed_embedding.drop(columns="feed_embedding")
+
+for i, j in enumerate(X_r):
+    feed_embedding["pca{}".format(i)] = j
+
+df = df.merge(feed_embedding, on="feedid", how="left")
+del feed_embedding, temp
+gc.collect()
+
+df[df.select_dtypes("float").columns] = df.select_dtypes("float").apply(pd.to_numeric, downcast="float")
 
 ## 统计历史X天的曝光、转化、视频观看等情况（此处的转化率统计其实就是target encoding）
 for stat_cols in tqdm([
@@ -171,14 +183,14 @@ for stat_cols in tqdm([
     ["userid"],
     ["feedid"],
     ["authorid"],
-    # ["tags"],
-    # ["keywords"],
-    # ["bgm_singer_id"],
-    # ["bgm_song_id"],
-    ["userid", "authorid"]
-    # ["userid", "tags"],
-    # ["userid", "bgm_singer_id"],
-    # ["userid", "bgm_song_id"]
+    ["tags"],
+    ["keywords"],
+    ["bgm_singer_id"],
+    ["bgm_song_id"],
+    ["userid", "authorid"],
+    ["userid", "tags"],
+    ["userid", "bgm_singer_id"],
+    ["userid", "bgm_song_id"]
 ]):
 
     f = "_".join(stat_cols)
@@ -192,9 +204,9 @@ for stat_cols in tqdm([
         g = tmp.groupby(stat_cols)
         feats = []
 
-        if stat_cols not in [["device"]]:
-            tmp = tmp.merge(g.size().reset_index(name="{}_count".format(f)), on=stat_cols, how="left")
-            feats.append("{}_count".format(f))
+        # if stat_cols not in [["device"]]:
+        #     tmp = tmp.merge(g.size().reset_index(name="{}_count".format(f)), on=stat_cols, how="left")
+        #     feats.append("{}_count".format(f))
 
         # if stat_cols in [["userid", "authorid"], ["userid", "tags"]]:
         #     tmp["{}_in_{}".format(f, stat_cols[0])] = tmp["{}_count".format(f)] / (tmp["{}_count".format(stat_cols[0])] + 1)
@@ -202,22 +214,22 @@ for stat_cols in tqdm([
         #     feats.append("{}_in_{}".format(f, stat_cols[0]))
         #     feats.append("{}_in_{}".format(f, stat_cols[1]))
 
-        # if stat_cols not in [["device"]]:
-        #     tmp["{}_{}day_count".format(f, PAST_DAYS)] = g["date_"].transform("count")
-        #     feats.append("{}_{}day_count".format(f, PAST_DAYS))
+        if stat_cols not in [["device"], ["userid", "bgm_singer_id"], ["userid", "bgm_song_id"]]:
+            tmp["{}_{}day_count".format(f, PAST_DAYS)] = g["date_"].transform("count")
+            feats.append("{}_{}day_count".format(f, PAST_DAYS))
 
         # for x in PLAY_COLS[:3]:
         #     tmp["{}_{}day_{}_rate".format(f, PAST_DAYS, x)] = g[x].transform("mean")
         #     feats.append("{}_{}day_{}_rate".format(f, PAST_DAYS, x))
-        #
+
 
         # if stat_cols not in [["device"], ["feedid"]]:
         #     tmp["{}_{}day_videoplayseconds_mean".format(f, PAST_DAYS)] = g["videoplayseconds"].transform("mean")
         #     feats.append("{}_{}day_videoplayseconds_mean".format(f, PAST_DAYS))
 
-        if stat_cols not in [["userid"], ["device"]]:
+        if stat_cols in [["userid"]]:
             for x in PLAY_COLS[1:]:
-                for stat in ["max", "mean"]:
+                for stat in ["max", "mean", "min", "std", "median"]:
                     tmp["{}_{}day_{}_{}".format(f, PAST_DAYS, x, stat)] = g[x].transform(stat)
                     feats.append("{}_{}day_{}_{}".format(f, PAST_DAYS, x, stat))
 
@@ -234,8 +246,8 @@ for stat_cols in tqdm([
     del stat_df
     gc.collect()
 
-df = df.drop(columns=["play_times", "is_finish", "play", "stay", "bgm_song_id", "bgm_singer_id", "tags", "keywords",
-                      "machine_tag_list", "machine_keyword_list"])
+df = df.drop(columns=["play_times", "is_finish", "play", "stay", "tags", "keywords",
+                      "machine_tag_list", "machine_keyword_list", "authorid", "device", "bgm_song_id", "bgm_singer_id"])
 
 ## 全局信息统计，包括曝光、偏好等，略有穿越，但问题不大，可以上分，只要注意不要对userid-feedid做组合统计就行
 # for f in tqdm(["userid", "feedid", "authorid"]):
@@ -271,7 +283,7 @@ df = reduce_mem(df, [f for f in df.columns if f not in ["date_"] + ACTION_LIST])
 train = df[~df["read_comment"].isna()].reset_index(drop=True)
 test = df[df["read_comment"].isna()].reset_index(drop=True)
 
-cols = [f for f in df.columns if f not in ["date_"] + ACTION_LIST]
+cols = [f for f in df.columns if f not in ["date_", "userid", "feedid"] + ACTION_LIST]
 del df
 gc.collect()
 
@@ -285,8 +297,9 @@ val_x = train[train["date_"] == VALIDATE_DAY].reset_index(drop=True)
 ##################### 线下验证 #####################
 uauc_list = []
 r_list = []
+feature_importance_df = pd.DataFrame()
 
-for y in ACTION_LIST[:1]:
+for y in ACTION_LIST[:4]:
     print("=========", y, "=========")
 
     t = time.time()
@@ -305,7 +318,7 @@ for y in ACTION_LIST[:1]:
         trn_x[cols], trn_x[y],
         eval_set=[(val_x[cols], val_x[y])],
         eval_metric="auc",
-        categorical_feature=CATEGORY_COLS,
+        #categorical_feature=CATEGORY_COLS,
         early_stopping_rounds=100,
         verbose=50,
     )
@@ -315,41 +328,48 @@ for y in ACTION_LIST[:1]:
     uauc_list.append(val_uauc)
     print(val_uauc)
     r_list.append(clf.best_iteration_)
+
+    fold_importance_df = pd.DataFrame()
+    fold_importance_df["feature"] = cols
+    fold_importance_df["importance"] = clf.feature_importances_
+    feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
+
     print("runtime: {}\n".format(time.time() - t))
 
-# weighted_uauc = 0.4 * uauc_list[0] + 0.3 * uauc_list[1] + 0.2 * uauc_list[2] + 0.1 * uauc_list[3]
-# del trn_x, val_x
-# gc.collect()
-# print(uauc_list)
-# print(weighted_uauc)
+display_importances(feature_importance_df)
+weighted_uauc = 0.4 * uauc_list[0] + 0.3 * uauc_list[1] + 0.2 * uauc_list[2] + 0.1 * uauc_list[3]
+del trn_x, val_x
+gc.collect()
+print(uauc_list)
+print(weighted_uauc)
 
-##################### 全量训练 #####################
-# trn_all = train[(train["date_"] >= PAST_DAYS + 1) & (train["date_"] < MAX_DAY)].reset_index(drop=True)
-# r_dict = dict(zip(ACTION_LIST[:4], r_list))
-#
-# for y in ACTION_LIST[:4]:
-#     print("=========", y, "=========")
-#
-#     t = time.time()
-#     clf = LGBMClassifier(
-#         learning_rate=0.05,
-#         n_estimators=r_dict[y],
-#         num_leaves=63,
-#         subsample=0.8,
-#         colsample_bytree=0.8,
-#         random_state=2021
-#     )
-#
-#     clf.fit(
-#         trn_all[cols], trn_all[y],
-#         eval_set=[(trn_all[cols], trn_all[y])],
-#         early_stopping_rounds=r_dict[y],
-#         verbose=100
-#     )
-#
-#     test[y] = clf.predict_proba(test[cols])[:, 1]
-#     print("runtime: {}\n".format(time.time() - t))
-#
-# test[["userid", "feedid"] + ACTION_LIST[:4]].to_csv(
-#     "sub_%.6f_%.6f_%.6f_%.6f_%.6f.csv" % (weighted_uauc, uauc_list[0], uauc_list[1], uauc_list[2], uauc_list[3]),index=False
-# )
+#################### 全量训练 #####################
+trn_all = train[(train["date_"] >= PAST_DAYS + 1) & (train["date_"] < MAX_DAY)].reset_index(drop=True)
+r_dict = dict(zip(ACTION_LIST[:4], r_list))
+
+for y in ACTION_LIST[:4]:
+    print("=========", y, "=========")
+
+    t = time.time()
+    clf = LGBMClassifier(
+        learning_rate=0.05,
+        n_estimators=r_dict[y],
+        num_leaves=63,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=2021
+    )
+
+    clf.fit(
+        trn_all[cols], trn_all[y],
+        eval_set=[(trn_all[cols], trn_all[y])],
+        early_stopping_rounds=r_dict[y],
+        verbose=100
+    )
+
+    test[y] = clf.predict_proba(test[cols])[:, 1]
+    print("runtime: {}\n".format(time.time() - t))
+
+test[["userid", "feedid"] + ACTION_LIST[:4]].to_csv(
+    "sub_%.6f_%.6f_%.6f_%.6f_%.6f.csv" % (weighted_uauc, uauc_list[0], uauc_list[1], uauc_list[2], uauc_list[3]),index=False
+)
